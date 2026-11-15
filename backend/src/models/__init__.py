@@ -5,3 +5,4 @@ from .lot import SeedLot
 from .count import LotCount
 from .bayes_run import BayesRun
 from .note import SamplingNote
+from .replant_plan import ReplantPlan

@@ -17,9 +17,9 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 | 角色 | 账号 | 密码 | 页面与权限 |
 |---|---|---|---|
-| admin 种质负责人 | admin@duocen.demo | Duocen2026! | 六页；批注、创建研究、提交、批准/退回 |
-| analyst 批次分析员 | analyst@duocen.demo | Duocen2026! | 六页；核对n/k、创建研究、计数批注、补种说明 |
-| viewer 抽样阅读者 | viewer@duocen.demo | Duocen2026! | 六页只读；获批后下载汇总及完整预测PMF CSV |
+| admin 种质负责人 | admin@duocen.demo | Duocen2026! | 七页；批注、创建研究、提交、批准/退回 |
+| analyst 批次分析员 | analyst@duocen.demo | Duocen2026! | 七页；核对n/k、创建研究、计数批注、补种说明、补种求解 |
+| viewer 抽样阅读者 | viewer@duocen.demo | Duocen2026! | 七页只读；可查看补种分配与界限，写入403 |
 
 JWT角色后端真实执行，viewer写入403、analyst审批403、未批准导出403，已审阅建议不可重复审批。登录/计数批注/排队/worker完成/建议和审批写审计；登录IP每分钟最多30次。另有全局异常中间件，422校验handler只返回loc/msg文本，不回显NaN/Inf input，避免错误响应序列化成500。部署前修改JWT_SECRET及Compose内数据库口令。
 
@@ -34,13 +34,39 @@ JWT角色后端真实执行，viewer写入403、analyst审批403、未批准导�
 7. 09:25 切换 `DC-02` 同观测率夹具：所有批70/100，α真实触及5000上界，界面标弱识别；不把窄条件区间当成稳定已知先验。
 8. 10:00 陆岑批准独立补种研究，温桥下载 `germination-N-summary.csv` 和 `germination-N-predictive.csv`，按相同n/k口径另做独立试种。
 
-## 六页、五实体与seed
+## 七页、六实体与seed
 
-批次总览、计数来源、先验与情景、条件后验、补种审阅、研究留痕。`GerminationStudy / SeedLot / LotCount / BayesRun / SamplingNote` 均贯穿表/model/schema/service/route/前端API/store/页面或业务组件，另有User/Audit。批次身份与n/k只读核对，计数批注可写，运行冻结快照后不回写。
+批次总览、计数来源、先验与情景、条件后验、补种优化、补种审阅、研究留痕。`GerminationStudy / SeedLot / LotCount / BayesRun / SamplingNote / ReplantPlan` 均贯穿表/model/schema/service/route/前端API/store/页面或业务组件，另有User/Audit。批次身份与n/k只读核对，计数批注可写，运行冻结快照后不回写；补种方案保存冻结后验与逐批输入，不随后续来源变化。
 
-三研究×28=84批次、84计数：DC-01潜在率Beta(8,4)再Binomial抽样（固定种子320）；DC-02全部70/100为人工构造的同观测率上界夹具，不冒充随机抽样；DC-03固定种子322生成n、k全部0，全一另外有独立算法拒绝验证。每批n20–180。自然键email、study code、(study,lot code)、lot_id唯一计数、基线run name；重复seed只补缺失，不覆盖用户批注、计数或已批准建议。`SEED_DEMO=true`启动执行，失败记日志；可独立重复执行seed。
+三研究×28=84批次、84计数：DC-01潜在率Beta(8,4)再Binomial抽样（固定种子320）；DC-02全部70/100为人工构造的同观测率上界夹具，不冒充随机抽样；DC-03固定种子322生成n、k全部0，全一另外有独立算法拒绝验证。每批n20–180。自然键email、study code、(study,lot code)、lot_id唯一计数、基线run name；重复seed只补缺失，不覆盖用户批注、计数或已批准建议，并补一份28批补种演示方案。`SEED_DEMO=true`启动执行，失败记日志；可独立重复执行seed。
 
 共享RunSummary在首页/结果/审阅复用，ShrinkageChart在首页/结果复用；另有StudySelector、PosteriorChart、PredictiveChart及通用Notice/DataTable/StatusBadge。useResearch/useAction处理公共状态。全部数值、CDF与PMF在Python计算，SVG只映射真实结果。
+
+## 补种最低成本整数分配（分支定界）
+
+补种页基于**选定且已完成**的研究：冻结后验形状 `Beta(a_j,b_j)` 直接取自该次运行结果，重新填报来源不会改写已保存方案。分析员逐批设置可用粒数（0–200，至多28批）与每粒成本（正数），再给合计萌发目标 T（整数）与达标概率要求 p∈(0,1)。沿用冻结后验与批间独立假设：
+
+```text
+K_j | x_j ~ BetaBinomial(x_j, a_j, b_j)，各批独立，S = Σ K_j
+min  Σ c_j x_j
+s.t. Pr(S ≥ T) ≥ p， 0 ≤ x_j ≤ cap_j， x_j 为整数
+```
+
+- 求解器 `replant_service.solve_replant` 为深度优先分支定界：逐批枚举整数粒数，按每粒成本升序展开；支持量可接纳下界做成本剪枝，Cantelli（单边切比雪夫）不等式给出充分可行性证书提前剪支。
+- 合计 PMF 用“普通概率—按最大值缩放”混合表示，避免 28 批深卷积在普通浮点下整体下溢为 0；缩放只消去常数因子，归一化尾部概率与真实概率一致。
+- 初始可行方案由坐标下降启发式给出（满配出发，逐批二分求保持全局可行的最小粒数；单批萌发关于粒数随机占优，可行性单调）。
+- 三种状态严格区分：`optimal` 仅在搜索完整闭合、成本下界与可行上界相等时标记；`open` 为超时或节点上限触发的搜索未决，返回已证成本下界与可行方案成本上界（上界方案保证满足概率，但不声称最优）；`infeasible` 为搜索前即证明无解（目标超过总可用粒数，或全部满配仍达不到概率），与“未决”分开。
+- 页面呈现逐批分配粒数、该行成本、期望萌发、实际达标概率、已证下界/上界与间隙、节点数与是否超时。保存时把后验形状、逐批粒数/成本、目标、概率、fit/input hash 与快照 hash 一起写入 `ReplantPlan.frozen_snapshot`，之后只读展示。
+- 文字补种建议（SamplingNote）保留在补种审阅页，与整数优化相互独立。
+
+## 补种算法测试
+
+`backend/tests/` 为纯 pytest（算法测试不依赖数据库/Redis，API 测试用内存 SQLite + 依赖覆盖）：
+
+- `test_replant_service.py`：40 组随机小规模实例与独立穷举实现逐案对照（状态、最优成本、实际概率）；固定均值贪心反例（贪心方案达标概率不足，分支定界给最优）；限时与节点上限的降级语义；已证无解与搜索未决区分；零目标、零容量批、深卷积下溢回归、确定性与输入校验。
+- `test_replant_plan_api.py`：方案持久化与冻结快照、来源计数变更后方案不变、缺批/未知批/未完成研究/粒数成本校验、viewer 写入 403 与未认证 401。
+
+运行：`cd backend && python -m pytest tests/ -q`。
 
 ## 有界多起点边际拟合
 
